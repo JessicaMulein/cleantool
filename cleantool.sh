@@ -6,113 +6,147 @@ FORCERM=0
 RECURSIVE=0
 #CLEANEXT=#DO NOT DEFINE/UNCOMMENT! Required for logic
 
+# https://stackoverflow.com/questions/4175264/how-to-retrieve-absolute-path-given-relative/51264222#51264222
+function toAbsPath {
+    local target="$1"
+
+    if [ "$target" == "." ]; then
+        echo "$(pwd)"
+    elif [ "$target" == ".." ]; then
+        echo "$(dirname "$(pwd)")"
+    else
+        echo "$(cd "$(dirname "$1")"; pwd)/$(basename "$1")"
+    fi
+}
+
 function CleanDir() {
-  OFS=$IFS
+  local OFS=$IFS
   IFS=$'\0'
 
-  DONE=()
-  for A in ./*.*.*; do
-    #AA=`echo "$A" | sed -E 's/^(.*)\.(.*)\.(.*)$/\1/'`
-    AB=`echo "$A" | sed -E 's/^.+\.(.+)\..+$/\1/'`
-    #AC=`echo "$A" | sed -E 's/^(.*)\.(.*)\.(.*)$/\3/'`
-    if [[ ! " ${DONE[*]} " == *"${AB}"* ]]; then
-      DONE+=(${AB})
-      ISAMPM=`echo "${AB}" | grep -E "^[0-9]+ (AM|PM)$"`
-      if [ "${ISAMPM}" = "" ]; then
-        CleanExtension "${AB}"
-      fi
-    fi
+  echo "Working in $(pwd)"
+
+  local DONE=()
+  find -E . -maxdepth 1 -type f -regex '^\.\/.+\..+\.[a-zA-Z0-9]{6}$' 2>/dev/null | while read A; do
+    local AA="${A##*.}"
+    local AB="${A%.*}"
+    CleanSet "$AB" "$AA"
+  done
+  IFS=$OFS
+}
+
+function CleanExtension() {
+  if [ $# -ne 1 ]; then
+    return 1
+  fi
+  local OFS=$IFS
+  IFS=$'\0'
+  local EXT=$1
+
+  echo "Working on ${EXT} in $(pwd)"
+
+  local DONE=()
+  # hybrid glob find regex
+  find -E ./*.${EXT}.* -maxdepth 1 -type f -regex '^\.\/.+\..+\.[a-zA-Z0-9]{6}$' 2>/dev/null | while read A; do
+    local AA="${A##*.}"
+    local AB="${A%.*}"
+    CleanSet "$AB" "$AA"
   done
   IFS=$OFS
 }
 
 function RecursiveCleanDir() {
-  OFS=$IFS
+  local OFS=$IFS
   IFS=$'\0'
-
-  # clean the files in this directory
-  CleanDir # do files
+  local OPWD=$(pwd)
+  if [ $# -eq 1 ]; then
+    local EXT="$1"
+    CleanExtension "$EXT"
+  else
+    # clean the files in this directory
+    CleanDir # do files
+  fi
 
   # walk the directories and recurse
-  for D in * ; do
-    if [ -d "${D}" ]; then
-      cd "${D}"
-      RecursiveCleanDir # do dirs/recurse
-      cd ..
+  for D in ./* ; do
+    if [ ! -L "${D}" -a -d "${D}" -a "$D" != "." -a "$D" != ".." ]; then
+      cd "./${D}"
+      # do recurse
+      if [ ! -z $EXT ]; then
+        RecursiveCleanDir "$EXT"
+      else
+        RecursiveCleanDir
+      fi
+      cd "${OPWD}"
     fi
   done
 
   IFS=${OFS}
 }
 
-function CleanExtension() {
-  OFS=$IFS
+function CleanSet() {
+  if [ $# -ne 2 ]; then
+    return 1
+  fi
+  local OFS=$IFS
   IFS=$'\0'
-  EXT=$1
-  if [ "$1" = "" ]; then
-    exit
+  local OPWD=`pwd`
+  #local ABSPWD=$(toAbsPath)
+  local BASEFILE="$1"
+  local JUNKEXT="$2"
+
+  if [[ ! -f "${BASEFILE}" ]]; then
+    echo "  - Not a file: ${BASEFILE}"
+    return 1
   fi
-  if [[ "$1" = "*" ]] || [[ "$1" = "./*" ]]; then
-    return
+  if [[ ! -f "${BASEFILE}.${JUNKEXT}" ]]; then
+    echo "  - Not a file: ${BASEFILE}.${JUNKEXT}"
+    return 1
   fi
-  OPWD=`pwd`
 
-  echo "Checking $OPWD for *.${EXT}.* duplicates"
-  for A in ./*.${EXT}; do
-    AEXT=""
-    CNT=0
-    Afilename="${A%.${EXT}}"
-    for B in ./${Afilename}.${EXT}.*; do
-      Bextension="${B##*.}"
-      AEXT="${Afilename}.${EXT}.${Bextension}"
-      if [ "${Afilename}" != "*" -a "${Bextension}" != "*" -a "${Afilename}" != "./*" -a "${Bextension}" != "./*" ]; then
-        echo "- Comparing $OPWD/${A} +=> .${Bextension}"
-        if [ $USEMD5 -eq 1 ]; then
-          F1=`md5sum -b "${A}" 2>/dev/null | awk '{ print $1; }' &`
-          F2=`md5sum -b "${AEXT}" 2>/dev/null | awk '{ print $1; }' &`
-          FAIL=0
-          for job in `jobs -p`; do
-            wait $job || let "FAIL+=1"
-          done
-
-          if [ "$FAIL" == "0" -a "$F1" = "$F2" -a "$F1" != "" ]; then
-            CMPMATCH=0
-          else
-              echo "  - Failed joining $FAIL/2 hashes"
-          fi
-        else
-            cmp -s "${A}" "${AEXT}" > /dev/null 2>&1
-            CMPMATCH=$?
-        fi
-
-        if [ $CMPMATCH -eq 0 ]; then
-          echo -n "  - "
-          if [ $DRYRUN -eq 1 ]; then
-            echo -n "DRY RUN: "
-          fi
-          echo -n "Removing duplicate ${AEXT}"
-
-          if [[ ! -z $F1 ]] && [[ ! -z $F2 ]]; then
-              echo " [ ${F2} ]"
-          else
-              echo # newline
-          fi
-
-          if [[ $DRYRUN -eq 1 ]] && [[ $FORCERM -eq 1 ]]; then
-            rm -f "${AEXT}"
-          elif [[ $DRYRUN -eq 1 ]]; then
-            rm "${AEXT}"
-          fi
-        else
-          if [[ ! -z $F1 ]] && [[ ! -z $F2 ]]; then
-            echo "  - Empty or mismatch [ md5: $F1 != $F2 ]"
-          else
-            echo "  - Empty or mismatch [ cmp returned ${CMPMATCH} ]"
-          fi
-        fi
-      fi
+  echo "- Comparing ${OPWD}/${BASEFILE} +=> .${JUNKEXT}"
+  if [ $USEMD5 -eq 1 ]; then
+    local F1=`md5sum -b "${BASEFILE}" 2>/dev/null | awk '{ print $1; }' &`
+    local F2=`md5sum -b "${BASEFILE}.${JUNKEXT}" 2>/dev/null | awk '{ print $1; }' &`
+    local FAIL=0
+    for job in `jobs -p`; do
+      wait $job || let "FAIL+=1"
     done
-  done
+
+    if [ "$FAIL" == "0" -a "$F1" = "$F2" -a "$F1" != "" ]; then
+      local CMPMATCH=0
+    else
+        echo "  - Failed joining $FAIL/2 hashes"
+    fi
+  else
+      cmp -s "${BASEFILE}" "${BASEFILE}.${JUNKEXT}" > /dev/null 2>&1
+      local CMPMATCH=$?
+  fi
+
+  if [ $CMPMATCH -eq 0 ]; then
+    echo -n "  - "
+    if [ $DRYRUN -eq 1 ]; then
+      echo -n "DRY RUN: "
+    fi
+    echo -n "Removing duplicate ${BASEFILE}.${JUNKEXT}"
+
+    if [[ ! -z $F1 ]] && [[ ! -z $F2 ]]; then
+        echo " [ ${F2} ]"
+    else
+        echo # newline
+    fi
+
+    if [[ $DRYRUN -ne 1 ]] && [[ $FORCERM -eq 1 ]]; then
+      rm -f "${BASEFILE}.${JUNKEXT}"
+    elif [[ $DRYRUN -ne 1 ]]; then
+      rm "${BASEFILE}.${JUNKEXT}"
+    fi
+  else
+    if [[ ! -z $F1 ]] && [[ ! -z $F2 ]]; then
+      echo "  - Empty or mismatch [ md5: $F1 != $F2 ]"
+    else
+      echo "  - Empty or mismatch [ cmp returned ${CMPMATCH} ]"
+    fi
+  fi
   IFS=$OFS
 }
 
@@ -128,10 +162,13 @@ for ARG in $@; do
     "-md5")
         USEMD5=1
         ;;
+    "-dry-run")
+        DRYRUN=1
+        ;;
     *)
         # we've now seen an extension or some other data, skip it, but now we can assume we're doing CleanExtension since that is the only one that takes an argument
         if [ ! -z $CLEANEXT ]; then
-          echo "** ERROR ** : may only supply one extension to clean in the working directory"
+          echo "** ERROR ** : may only supply one extension to clean"
           exit 1
         fi
         CLEANEXT="$ARG"
@@ -140,10 +177,15 @@ for ARG in $@; do
 done
 
 if [ $RECURSIVE -eq 1 ]; then
-  echo "<---- Starting recursive clean ---->"
-  RecursiveCleanDir
+  if [ ! -z ${CLEANEXT} ]; then
+    echo "<---- Starting recursive clean for .${CLEANEXT} ---->"
+    RecursiveCleanDir "${CLEANEXT}"
+  else
+    echo "<---- Starting recursive clean ---->"
+    RecursiveCleanDir
+  fi
 elif [ ! -z $CLEANEXT ]; then
-  echo "<---- Starting extenion cleaning in the working directory ---->"
+  echo "<---- Starting extenion cleaning in the working directory for .${CLEANEXT} ---->"
   CleanExtension "$CLEANEXT"
 else
   echo "<---- Starting cleaning in the working directory only ---->"
