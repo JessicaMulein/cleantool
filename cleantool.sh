@@ -120,6 +120,10 @@ function CleanExtension() {
 for ARG in $@; do
   case "$ARG" in
     "-R")
+        if [[ ! -z $CLEANEXT ]]; then
+          echo "** ERROR ** : may not supply extension with -R option"
+          exit 2
+        fi
         RECURSIVE=1
         ;;
     "-f")
@@ -133,6 +137,10 @@ for ARG in $@; do
         if [ ! -z $CLEANEXT ]; then
           echo "** ERROR ** : may only supply one extension to clean in the working directory"
           exit 1
+        fi
+        if [ $RECURSIVE -eq 1 ]; then
+          echo "** ERROR ** : may not supply extension with -R option"
+          exit 2
         fi
         CLEANEXT="$ARG"
         ;;
